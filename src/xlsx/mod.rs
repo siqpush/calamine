@@ -6,7 +6,7 @@
 
 mod cells_reader;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::io::{Read, Seek};
 use std::str::FromStr;
@@ -28,7 +28,6 @@ use crate::{
     SheetType, SheetVisible, Table,
 };
 pub use cells_reader::XlsxCellReader;
-use crate::pivot::PivotDataUtil;
 #[cfg(feature = "pivot-cache")]
 use crate::xlsx::pivot_cache::PivotCache;
 
@@ -2313,13 +2312,13 @@ pub(crate) fn path_to_zip_path<RS: Read + Seek>(zip: &ZipArchive<RS>, path: &str
 
 #[cfg(feature = "pivot-cache")]
 mod pivot_cache {
-    // use std::collections::HashMap;
+    use std::collections::HashMap;
     use std::io::{Read, Seek};
-    // use quick_xml::events::Event;
-    // use quick_xml::name::QName;
-    // use crate::Data;
-    use crate::pivot::*;
-    use super::Xlsx;
+    use quick_xml::events::Event;
+    use quick_xml::name::QName;
+    use crate::Data;
+    use crate::pivot::PivotDataUtil;
+    use super::{xml_reader, XlReader, Xlsx};
 
     pub struct PivotCache<'a, RS: Read + Seek + 'a> {
         pub xl: &'a mut Xlsx<RS>,
@@ -2334,8 +2333,9 @@ mod pivot_cache {
             }
         }
     }
-    impl<'a, RS: Read + Seek + 'a> PivotDataUtil for PivotCache<'a, RS> { }
-    }
+
+    impl<'a, RS: Read + Seek + 'a> PivotDataUtil for PivotCache<'a, RS> {}
+
     impl<RS> PivotDataUtil for Xlsx<RS> {}
     impl<RS> PivotDataUtil for &mut Xlsx<RS> {}
 
@@ -2380,6 +2380,9 @@ mod pivot_cache {
                     }
                     Ok(Event::End(e)) if e.local_name().as_ref() == b"r" => {
                         return Some(row)
+                    }
+                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"pivotCacheRecords" => {
+                        return Some(self.field_names.iter().map(|fields| Data::String(fields.to_string())).collect())
                     }
                     Ok(Event::Eof) => return None,
                     Ok(_) => {}
@@ -2467,6 +2470,7 @@ mod pivot_cache {
             }
         }
     }
+}
 
 // -----------------------------------------------------------------------
 // Unit tests for Xlsx.
@@ -2614,6 +2618,7 @@ mod tests {
             strings: vec![],
             sheets: vec![],
             tables: None,
+            #[cfg(feature = "pivot-cache")]
             pivot_tables: None,
             formats: vec![],
             is_1904: false,

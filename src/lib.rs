@@ -66,7 +66,8 @@ mod cfb;
 mod datatype;
 mod formats;
 mod ods;
-pub mod pivot;
+#[cfg(feature = "pivot-cache")]
+mod pivot;
 mod xls;
 mod xlsb;
 mod xlsx;

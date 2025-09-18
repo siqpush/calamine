@@ -2231,16 +2231,20 @@ fn test_xlsx_backward_slash_part_name() {
 
 
 #[test]
+#[cfg(feature = "pivot-cache")]
 fn test_pivot_table_meta_data() {
     let mut wb: Xlsx<_> = wb("pivots.xlsx");
     assert!(wb.load_pivot_table_metadata().is_ok());
-    assert_eq!(vec!["PivotTable1".to_string(), "PivotTable2".to_string()], wb.pivot_tables().unwrap());
+    assert!(vec!["PivotTable1".to_string(), "PivotTable2".to_string()].iter().eq(wb.pivot_tables().unwrap().iter()));
+
 }
 #[test]
+#[cfg(feature = "pivot-cache")]
 fn test_pivot_cache_data_mapping() {
     let mut wb: Xlsx<_> = wb("pivots.xlsx");
     let _ = wb.load_pivot_table_metadata();
     let expected = vec![
+        vec![String("Id".to_string()), String("Name".to_string()), String("Category".to_string()), String("Value".to_string()), String("Size".to_string()), String("Date".to_string()), String("Value / Size".to_string()), String("IsBlue".to_string()), String("Null".to_string()), String("Misc".to_string())],
         vec![Int(1), String("a".to_string()), String("blue".to_string()), Int(10), Float(1.78), DateTimeIso("2024-11-01T00:00:00".to_string()), Float(5.617977528089887), Bool(true), Empty, Empty],
         vec![Int(2), String("b".to_string()), String("blue".to_string()), Int(20), Float(2.012), DateTimeIso("2024-01-04T00:00:00".to_string()), Float(9.940357852882704), Bool(true), Empty, Float(2.012)],
         vec![Int(3), String("c".to_string()), String("blue".to_string()), Int(15), Float(3.121), DateTimeIso("2024-01-31T00:00:00".to_string()), Float(4.806151874399231), Bool(true), Empty, DateTimeIso("2024-02-01T00:00:00".to_string())],
@@ -2259,6 +2263,7 @@ fn test_pivot_cache_data_mapping() {
 }
 
 #[test]
+#[cfg(feature = "pivot-cache")]
 fn test_pivot_table_cache_match() {
     let mut wb: Xlsx<_> = wb("pivots.xlsx");
     assert!(wb.load_pivot_table_metadata().is_ok());
