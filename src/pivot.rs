@@ -10,33 +10,57 @@ type Value = Option<Box<[u8]>>;
 pub trait PivotDataUtil {
     fn parse_item(item: (Tag, Value), decoder: &Decoder) -> Result<Data, crate::errors::Error> {
         match item.0.as_ref() {
-            b"m" => {
-                Ok(Data::Empty)
-            },
-            b"s" => {
-                Ok(item.1.map(|val| {if let Ok(val) = decoder.decode(val.as_ref()) { Data::String(val.to_string())} else {Data::Error(CellErrorType::GettingData)}}).unwrap_or(Data::Empty))
-            },
-            b"n" => {
-                Ok(item.1.map(|val| if val.contains(&b'.') { Data::Float(Self::bytes_to_f64(val.as_ref(), decoder))} else {Data::Int(Self::bytes_to_i64(val.as_ref(), decoder))}).unwrap_or(Data::Empty))
-            },
-            b"d" => {
-                Ok(item.1.as_ref().map(|val| if let Ok(val) = decoder.decode(val) {Data::DateTimeIso(val.into())} else {Data::Error(CellErrorType::GettingData)}).unwrap_or(Data::Empty))
-            },
-            b"b" => {
-                Ok(item.1.map(|val| {Data::Bool({
-                    match val.as_ref() {
-                        b"0" | b"false" => false,
-                        b"1" | b"true" => true,
-                        _ => unreachable!("boolean tags only support W3C XML Schema")
+            b"m" => Ok(Data::Empty),
+            b"s" => Ok(item
+                .1
+                .map(|val| {
+                    if let Ok(val) = decoder.decode(val.as_ref()) {
+                        Data::String(val.to_string())
+                    } else {
+                        Data::Error(CellErrorType::GettingData)
                     }
-                })}).unwrap_or(Data::Empty))
-            },
-            b"e" => {
-                Ok(item.1.map(|_| {Data::Error(CellErrorType::Ref)}).unwrap_or(Data::Empty))
-            },
-            _ => {
-                Err(crate::errors::Error::Msg("unhandled pivot cache tag for record"))
-            }
+                })
+                .unwrap_or(Data::Empty)),
+            b"n" => Ok(item
+                .1
+                .map(|val| {
+                    if val.contains(&b'.') {
+                        Data::Float(Self::bytes_to_f64(val.as_ref(), decoder))
+                    } else {
+                        Data::Int(Self::bytes_to_i64(val.as_ref(), decoder))
+                    }
+                })
+                .unwrap_or(Data::Empty)),
+            b"d" => Ok(item
+                .1
+                .as_ref()
+                .map(|val| {
+                    if let Ok(val) = decoder.decode(val) {
+                        Data::DateTimeIso(val.into())
+                    } else {
+                        Data::Error(CellErrorType::GettingData)
+                    }
+                })
+                .unwrap_or(Data::Empty)),
+            b"b" => Ok(item
+                .1
+                .map(|val| {
+                    Data::Bool({
+                        match val.as_ref() {
+                            b"0" | b"false" => false,
+                            b"1" | b"true" => true,
+                            _ => unreachable!("boolean tags only support W3C XML Schema"),
+                        }
+                    })
+                })
+                .unwrap_or(Data::Empty)),
+            b"e" => Ok(item
+                .1
+                .map(|_| Data::Error(CellErrorType::Ref))
+                .unwrap_or(Data::Empty)),
+            _ => Err(crate::errors::Error::Msg(
+                "unhandled pivot cache tag for record",
+            )),
         }
     }
 
@@ -44,7 +68,9 @@ pub trait PivotDataUtil {
         if e.local_name().as_ref().len() > 1 {
             false
         } else {
-            [b"s", b"n", b"m", b"e", b"b", b"d", b"x"].into_iter().any(|val| val.eq(e.local_name().as_ref()))
+            [b"s", b"n", b"m", b"e", b"b", b"d", b"x"]
+                .into_iter()
+                .any(|val| val.eq(e.local_name().as_ref()))
         }
     }
 
@@ -55,19 +81,13 @@ pub trait PivotDataUtil {
     fn byte_start_to_item(e: &BytesStart) -> (Tag, Value) {
         (
             Box::from(e.local_name().as_ref()),
-            e.attributes().find_map(|attr| {
-                match attr {
-                    Ok(
-                        Attribute {
-                            key: QName(b"v"),
-                            value: v
-                        }
-                    ) => {
-                        Some(Box::from(v))
-                    }
-                    _ => None
-                }
-            })
+            e.attributes().find_map(|attr| match attr {
+                Ok(Attribute {
+                    key: QName(b"v"),
+                    value: v,
+                }) => Some(Box::from(v)),
+                _ => None,
+            }),
         )
     }
 
@@ -78,7 +98,6 @@ pub trait PivotDataUtil {
         decoder.decode(val).unwrap().parse::<f64>().unwrap()
     }
 }
-
 
 pub struct PivotTableRef {
     name: String,
@@ -117,7 +136,7 @@ pub struct PivotTableRefBuilder {
     location: Option<String>,
     records: Option<String>,
     definitions: Option<String>,
-    cache_number: Option<usize>
+    cache_number: Option<usize>,
 }
 
 impl PivotTableRefBuilder {

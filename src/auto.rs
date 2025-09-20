@@ -165,7 +165,7 @@ where
             Sheets::Ods(ref e) => e.pictures(),
         }
     }
-    
+
     #[cfg(feature = "pivot-cache")]
     fn pivot_tables(&self) -> Option<Vec<String>> {
         match self {

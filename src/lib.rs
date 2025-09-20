@@ -319,7 +319,7 @@ where
     /// Get all pictures, tuple as (ext: String, data: Vec<u8>)
     #[cfg(feature = "picture")]
     fn pictures(&self) -> Option<Vec<(String, Vec<u8>)>>;
-    
+
     #[cfg(feature = "pivot-cache")]
     fn pivot_tables(&self) -> Option<Vec<String>>;
 }
