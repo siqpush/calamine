@@ -2232,17 +2232,16 @@ fn test_xlsx_backward_slash_part_name() {
 #[test]
 #[cfg(feature = "pivot-cache")]
 fn test_pivot_table_meta_data() {
-    let mut wb: Xlsx<_> = wb("pivots.xlsx");
-    assert!(wb.load_pivot_table_metadata().is_ok());
-    assert!(vec!["PivotTable1".to_string(), "PivotTable2".to_string()]
-        .iter()
-        .eq(wb.pivot_tables().unwrap().iter()));
+    let wb: Xlsx<_> = wb("pivots.xlsx");
+    let mut results = wb.pivot_tables();
+    results.sort();
+    let expected = vec!["PivotTable1", "PivotTable2"];
+    assert_eq!(expected, results);
 }
 #[test]
 #[cfg(feature = "pivot-cache")]
 fn test_pivot_cache_data_mapping() {
     let mut wb: Xlsx<_> = wb("pivots.xlsx");
-    let _ = wb.load_pivot_table_metadata();
     let expected = vec![
         vec![
             String("Id".to_string()),
@@ -2377,7 +2376,7 @@ fn test_pivot_cache_data_mapping() {
             String("blue".to_string()),
         ],
     ];
-    let mut results = wb.get_pivot_data_by_name_ref("PivotTable1").unwrap();
+    let mut results = wb.pivot_table_data("PivotTable1").unwrap();
     for expected_data in expected.into_iter() {
         assert_eq!(results.next(), Some(expected_data));
     }
@@ -2387,14 +2386,13 @@ fn test_pivot_cache_data_mapping() {
 #[cfg(feature = "pivot-cache")]
 fn test_pivot_table_cache_match() {
     let mut wb: Xlsx<_> = wb("pivots.xlsx");
-    assert!(wb.load_pivot_table_metadata().is_ok());
     let results1 = wb
-        .get_pivot_data_by_name_ref("PivotTable1")
+        .pivot_table_data("PivotTable1")
         .unwrap()
         .into_iter()
         .collect::<Vec<_>>();
     let results2 = wb
-        .get_pivot_data_by_name_ref("PivotTable2")
+        .pivot_table_data("PivotTable2")
         .unwrap()
         .into_iter()
         .collect::<Vec<_>>();

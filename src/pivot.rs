@@ -4,8 +4,8 @@ use quick_xml::events::BytesStart;
 use quick_xml::name::QName;
 use quick_xml::Decoder;
 
-type Tag = Box<[u8]>;
-type Value = Option<Box<[u8]>>;
+pub type Tag = Box<[u8]>;
+pub type Value = Option<Box<[u8]>>;
 
 pub trait PivotDataUtil {
     fn parse_item(item: (Tag, Value), decoder: &Decoder) -> Result<Data, crate::errors::Error> {
@@ -102,7 +102,6 @@ pub trait PivotDataUtil {
 pub struct PivotTableRef {
     name: String,
     sheet: String,
-    location: String,
     records: String,
     definitions: String,
     cache_number: usize,
@@ -114,9 +113,6 @@ impl PivotTableRef {
     }
     pub fn sheet(&self) -> &str {
         self.sheet.as_ref()
-    }
-    pub fn location(&self) -> &str {
-        self.location.as_ref()
     }
     pub fn records(&self) -> &str {
         self.records.as_ref()
@@ -133,7 +129,6 @@ impl PivotTableRef {
 pub struct PivotTableRefBuilder {
     name: Option<String>,
     sheet: Option<String>,
-    location: Option<String>,
     records: Option<String>,
     definitions: Option<String>,
     cache_number: Option<usize>,
@@ -150,10 +145,6 @@ impl PivotTableRefBuilder {
     }
     pub fn sheet(mut self, s: impl Into<String>) -> Self {
         self.sheet = Some(s.into());
-        self
-    }
-    pub fn location(mut self, s: impl Into<String>) -> Self {
-        self.location = Some(s.into());
         self
     }
     pub fn records(mut self, s: impl Into<String>) -> Self {
@@ -174,7 +165,6 @@ impl PivotTableRefBuilder {
         PivotTableRef {
             name: self.name.unwrap(),
             sheet: self.sheet.unwrap(),
-            location: self.location.unwrap(),
             records: self.records.unwrap(),
             definitions: self.definitions.unwrap(),
             cache_number: self.cache_number.unwrap(),
