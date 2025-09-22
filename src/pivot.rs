@@ -92,10 +92,12 @@ pub trait PivotDataUtil {
     }
 
     fn bytes_to_i64(val: &[u8], decoder: &Decoder) -> i64 {
-        decoder.decode(val).unwrap().parse::<i64>().unwrap()
+        atoi_simd::parse::<i64>(decoder.decode(val).unwrap().as_bytes())
+            .expect("failed to parse bytes into i64")
     }
     fn bytes_to_f64(val: &[u8], decoder: &Decoder) -> f64 {
-        decoder.decode(val).unwrap().parse::<f64>().unwrap()
+        fast_float2::parse(decoder.decode(val).unwrap().as_bytes())
+            .expect("failed to parse bytes into f64")
     }
 }
 
