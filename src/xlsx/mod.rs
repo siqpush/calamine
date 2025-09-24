@@ -1115,27 +1115,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 buf.clear();
 
                 match xml.read_event_into(&mut buf) {
-                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"cacheFields" => {
-                        for a in e.attributes() {
-                            if let Ok(Attribute {
-                                key: QName(b"count"),
-                                value,
-                            }) = a
-                            {
-                                let field_count = xml.decoder().decode(value.as_ref())?;
-                                let capacity =
-                                    atoi_simd::parse(field_count.as_bytes()).map_err(|e| {
-                                        XlsxError::Unrecognized {
-                                            typ: "usize",
-                                            val: format!("{field_count} -> {e}"),
-                                        }
-                                    })?;
-                                fields = Vec::with_capacity(capacity);
-                                field_names = Vec::with_capacity(capacity);
-                                break;
-                            }
-                        }
-                    }
                     Ok(Event::Start(e)) if e.local_name().as_ref() == b"cacheField" => {
                         for ref a in e.attributes() {
                             if let Ok(Attribute {
