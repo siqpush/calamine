@@ -1096,6 +1096,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
         let mut definition_map = std::collections::HashMap::new();
         let mut field_names = vec![];
 
+        // Converting into an iterator requires first reading a pivotCacheDefinitions.xml file
+        // to get lookup values used in pivotCacheRecords.xml file.
         {
             let mut xml = match xml_reader(&mut self.zip, definitions) {
                 None => {
@@ -2478,7 +2480,7 @@ pub(crate) fn path_to_zip_path<RS: Read + Seek>(zip: &ZipArchive<RS>, path: &str
 #[cfg(feature = "pivot-cache")]
 mod pivot_cache {
     use super::XlReader;
-    use crate::{CellErrorType, Data};
+    use crate::{CellErrorType, Data, XlsxError};
     use quick_xml::events::attributes::Attribute;
     use quick_xml::events::BytesStart;
     use quick_xml::events::Event;
@@ -2490,7 +2492,8 @@ mod pivot_cache {
     pub type Tag = Box<[u8]>;
     pub type Value = Option<Box<[u8]>>;
 
-    pub fn parse_item(item: (Tag, Value), decoder: &Decoder) -> Result<Data, crate::errors::Error> {
+    /// Parse an item within a PivotCache Record into its appropriate [`Data`] type.
+    pub fn parse_item(item: (Tag, Value), decoder: &Decoder) -> Result<Data, XlsxError> {
         match item.0.as_ref() {
             b"m" => Ok(Data::Empty),
             b"s" => Ok(item
@@ -2547,21 +2550,17 @@ mod pivot_cache {
                 .1
                 .map(|_| Data::Error(CellErrorType::Ref))
                 .unwrap_or(Data::Empty)),
-            _ => Err(crate::errors::Error::Msg(
+            _ => Err(XlsxError::Unexpected(
                 "unhandled pivot cache tag for record",
             )),
         }
     }
 
-    /// Check if tag is an item of a record.
+    /// Check if tag is an item within a PivotCache Record, which does not require a Definitions lookup.
     pub fn is_item(e: &BytesStart) -> bool {
-        [b"s", b"n", b"m", b"e", b"b", b"d", b"x"]
+        [b"s", b"n", b"m", b"e", b"b", b"d"]
             .into_iter()
             .any(|val| val.eq(e.local_name().as_ref()))
-    }
-
-    fn data(e: &BytesStart, decoder: &Decoder) -> Result<Data, crate::errors::Error> {
-        parse_item(byte_start_to_item(e), decoder)
     }
 
     pub fn byte_start_to_item(e: &BytesStart) -> (Tag, Value) {
@@ -2699,7 +2698,9 @@ mod pivot_cache {
                         col_number += 1;
                     }
                     Ok(Event::Start(e)) if is_item(&e) => {
-                        row.push(data(&e, &self.reader.decoder()).unwrap());
+                        row.push(
+                            parse_item(byte_start_to_item(&e), &self.reader.decoder()).unwrap(),
+                        );
                         col_number += 1;
                     }
                     Ok(Event::End(e)) if e.local_name().as_ref() == b"r" => return Some(row),
