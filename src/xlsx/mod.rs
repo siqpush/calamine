@@ -1147,12 +1147,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
             for (field, name) in fields.into_iter().zip(field_names.iter()) {
                 definition_map.insert(name.to_string(), field);
             }
-            // supplement the map with empty vecs where a field has no shared items listed
-            if definition_map.len() < field_names.len() {
-                for name in field_names.iter() {
-                    definition_map.entry(name.to_string()).or_insert(vec![]);
-                }
-            }
         }
 
         xml_reader(&mut self.zip, records).map_or_else(
