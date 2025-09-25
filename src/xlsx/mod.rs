@@ -984,10 +984,10 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///     let mut workbook: Xlsx<_> = open_workbook(path)?;
     ///
     ///     // Get the pivot table names in the workbook.
-    ///     let pivot_table_names = workbook.pivot_tables_by_sheet("pivotsheet1")?;
+    ///     let pivot_table_names = workbook.pivot_tables_by_sheet("PivotSheet1")?;
     ///
     ///
-    ///     // Check the pivot table names (ordering not garaunteed).
+    ///     // Check the pivot table names (ordering not guaranteed).
     ///     assert_eq!(pivot_table_names, vec!["PivotTable1"]);
     ///
     ///     Ok(())
@@ -1015,13 +1015,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
     }
 
     #[cfg(feature = "pivot-cache")]
-    /// Get an iterator over a named Pivot Table's cached data.
+    /// Get an iterator over a pivot table's cached data.
     ///
     /// Invalid Pivot Table names will return None.
     ///
     /// # Examples
     ///
-    /// An example of retrieving pivot  data for a Pivot Table named PivotTable1
+    /// An example of retrieving pivot  data for a Pivot Table named PivotTable1.
     ///
     /// ```
     /// use calamine::{open_workbook, Error, Xlsx};
@@ -1033,10 +1033,10 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///     // Open the workbook.
     ///     let mut workbook: Xlsx<_> = open_workbook(path)?;
     ///
-    ///     // Get the Pivot Table names in the workbook.
-    ///     if let Some(pivot_table_data) = workbook.pivot_table_data("PivotTable1") {
+    ///     // Get the Pivot Table data by referencing the pivot table name and the worksheet it resides.
+    ///     if let Some(pivot_table_data) = workbook.pivot_table_data("PivotTable1", "PivotSheet1") {
     ///         for row in pivot_table_data? {
-    ///             // do something
+    ///             // Do something.
     ///         }
     ///     }
     ///
@@ -1047,12 +1047,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
     pub fn pivot_table_data(
         &'_ mut self,
         pivot_table_name: &str,
+        sheet_name: &str,
     ) -> Option<Result<PivotCacheIter<'_, RS>, XlsxError>> {
         self.pivot_tables
             .as_ref()
             .and_then(|val| {
                 val.iter().find_map(|val| {
-                    if val.name() == pivot_table_name {
+                    if val.name() == pivot_table_name && val.sheet() == sheet_name {
                         Some(val.cache_number())
                     } else {
                         None
@@ -1139,13 +1140,62 @@ impl<RS: Read + Seek> Xlsx<RS> {
     }
 
     #[cfg(feature = "pivot-cache")]
-    /// Returns names of pivot tables found in workbook.
-    pub fn pivot_tables(&self) -> Vec<&str> {
+    /// Get a list pivot tables and the worksheets they reside.
+    ///
+    /// # Returns
+    ///
+    /// ```text
+    /// Vec<(String, String)>
+    ///        │       │
+    ///        │       └─── Worksheet name
+    ///        │
+    ///        └──── Pivot Table name
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// Pivot table names are unique per worksheet, not per workbook.
+    ///
+    /// # Examples
+    ///
+    /// An example of retrieving pivot cache data for a Pivot Table named "PivotTable1"
+    /// on worksheet "PivotSheet1".
+    ///
+    /// ```
+    /// use calamine::{open_workbook, Error, Xlsx};
+    ///
+    /// fn main() -> Result<(), Error> {
+    ///
+    ///     // Open the workbook.
+    ///     let mut workbook: Xlsx<_> = open_workbook("tests/pivots.xlsx")?;
+    ///
+    ///     // "PivotTable1" is found on both sheets: "PivotSheet1" & "PivotSheet3" so
+    ///     // we must include the sheet name in our filter ~ see note on uniqueness.
+    ///     let pivot_tables = {
+    ///         workbook.pivot_tables()
+    ///         .into_iter()
+    ///         .filter_map(|pt| {
+    ///             if pt.0.eq("PivotTable1") && pt.1.eq("PivotSheet1") {
+    ///                 Some(pt)
+    ///             } else {
+    ///                 None
+    ///             }
+    ///         })
+    ///         .collect::<Vec<_>>()
+    ///     };
+    ///
+    ///     assert_eq!(pivot_tables.len(), 1);
+    ///
+    ///     Ok(())
+    ///
+    /// }
+    ///
+    pub fn pivot_tables(&self) -> Vec<(String, String)> {
         self.pivot_tables
             .as_ref()
             .expect("pivot tables should have been loaded by calling new on Reader Trait")
             .iter()
-            .map(|v| v.name())
+            .map(|v| (v.name().to_string(), v.sheet().to_string()))
             .collect()
     }
     // sheets must be added before this is called!!
