@@ -719,23 +719,23 @@ impl<RS: Read + Seek> Xlsx<RS> {
     // Finds pivot tables from sheets, finds the metadata with their associated cache and sets the pivot_tables field.
     fn read_pivot_table_metadata(&mut self) -> Result<(), XlsxError> {
         let mut pivot_table_references = vec![];
+        let sheets = self.sheets.clone();
+        for (i, (sheet_name, sheet_path)) in sheets.iter().enumerate() {
+            for pivot_path in self.find_pivot_table_paths_from_sheet(sheet_path)?.iter() {
+                let name = self.find_pivot_name_from_pivot_path(pivot_path)?;
+                let definition_cache_path =
+                    self.find_pivot_cache_definitions_from_pivot(pivot_path)?;
+                let record_cache_path = self
+                    .find_pivot_cache_records_from_pivot_cache_definition(&definition_cache_path)?;
 
-        for (i, (ref pivot_path, sheet)) in (self.find_pivot_table_paths_from_sheets()?)
-            .into_iter()
-            .enumerate()
-        {
-            let name = self.find_range_and_pivot_name_from_pivot_path(pivot_path)?;
-            let definition_cache_path = self.find_pivot_cache_definitions_from_pivot(pivot_path)?;
-            let record_cache_path =
-                self.find_pivot_cache_records_from_pivot_cache_definition(&definition_cache_path)?;
-
-            pivot_table_references.push(PivotTableRef::new(
-                name,
-                sheet,
-                record_cache_path,
-                definition_cache_path,
-                i,
-            ));
+                pivot_table_references.push(PivotTableRef::new(
+                    name,
+                    sheet_name.to_string(),
+                    record_cache_path,
+                    definition_cache_path,
+                    i,
+                ));
+            }
         }
         self.pivot_tables = Some(pivot_table_references);
         Ok(())
@@ -864,83 +864,71 @@ impl<RS: Read + Seek> Xlsx<RS> {
         }
     }
     #[cfg(feature = "pivot-cache")]
-    // Return a map of pivot table paths (ie xl/pivotTables/pivot1.xml) and the sheet name.
-    fn find_pivot_table_paths_from_sheets(
+    // Return a vec of pivot table paths (ie xl/pivotTables/pivot1.xml) for a given sheet name.
+    fn find_pivot_table_paths_from_sheet(
         &mut self,
-    ) -> Result<std::collections::HashMap<String, String>, XlsxError> {
-        let mut sheet_to_pivot_map = std::collections::HashMap::new();
+        sheet_path: &str,
+    ) -> Result<Vec<String>, XlsxError> {
+        let mut pivots_on_sheet = vec![];
         let mut buf = Vec::with_capacity(64);
 
-        for (sheet_name, sheet_path) in &self.sheets {
-            let last_folder_index = sheet_path.rfind('/').expect("should be in a folder");
-            let (base_folder, file_name) = sheet_path.split_at(last_folder_index);
-            let rel_path = format!("{base_folder}/_rels{file_name}.rels");
+        let last_folder_index = sheet_path.rfind('/').expect("should be in a folder");
+        let (base_folder, file_name) = sheet_path.split_at(last_folder_index);
+        let rel_path = format!("{base_folder}/_rels{file_name}.rels");
 
-            // we need another mutable borrow of self.zip later so we enclose this borrow within braces
-            {
-                let mut xml = match xml_reader(&mut self.zip, &rel_path) {
-                    None => continue,
-                    Some(x) => x?,
-                };
-                loop {
-                    buf.clear();
-                    match xml.read_event_into(&mut buf) {
-                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"Relationship" => {
-                            let mut id = Vec::new();
-                            let mut target = String::new();
-                            let mut is_pivot_table_type = false;
-                            for a in e.attributes() {
-                                match a.map_err(XlsxError::XmlAttr)? {
-                                    Attribute {
-                                        key: QName(b"Id"),
-                                        value: v,
-                                    } => id.extend_from_slice(&v),
-                                    Attribute {
-                                        key: QName(b"Target"),
-                                        value: v,
-                                    } => target = xml.decoder().decode(&v)?.into_owned(),
-                                    Attribute {
-                                        key: QName(b"Type"),
-                                        value: v,
-                                    } => is_pivot_table_type = *v == b"http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable"[..],
-                                    _ => (),
-                                }
-                            }
-                            if is_pivot_table_type {
-                                if let Some(target) = target.strip_prefix("../") {
-                                    // this is an incomplete implementation, but should be good enough for excel
-                                    let (parent, _) = base_folder
-                                        .rsplit_once('/')
-                                        .expect("Must be a parent folder");
-                                    sheet_to_pivot_map
-                                        .insert(format!("{parent}/{target}"), sheet_name.clone());
-                                } else if target.is_empty() { // do nothing
-                                } else {
-                                    sheet_to_pivot_map.insert(target, sheet_name.clone());
-                                }
+        // we need another mutable borrow of self.zip later so we enclose this borrow within braces
+        {
+            let mut xml = match xml_reader(&mut self.zip, &rel_path) {
+                // Some sheets may not have relationships - okay for path to not exist.
+                None => return Ok(vec![]),
+                Some(x) => x?,
+            };
+            loop {
+                buf.clear();
+                match xml.read_event_into(&mut buf) {
+                    Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"Relationship" => {
+                        let mut target = String::new();
+                        let mut is_pivot_table_type = false;
+                        for a in e.attributes() {
+                            match a.map_err(XlsxError::XmlAttr)? {
+                                Attribute {
+                                    key: QName(b"Target"),
+                                    value: v,
+                                } => target = xml.decoder().decode(&v)?.into_owned(),
+                                Attribute {
+                                    key: QName(b"Type"),
+                                    value: v,
+                                } => is_pivot_table_type = *v == b"http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable"[..],
+                                _ => (),
                             }
                         }
-                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"Relationships" => {
-                            break
+                        if is_pivot_table_type {
+                            if let Some(target) = target.strip_prefix("../") {
+                                // this is an incomplete implementation, but should be good enough for excel
+                                let (parent, _) = base_folder
+                                    .rsplit_once('/')
+                                    .expect("Must be a parent folder");
+                                pivots_on_sheet.push(format!("{parent}/{target}"));
+                            } else if target.is_empty() { // do nothing
+                            } else {
+                                pivots_on_sheet.push(target);
+                            }
                         }
-                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("Relationships")),
-                        Err(e) => return Err(XlsxError::Xml(e)),
-                        _ => (),
                     }
+                    Ok(Event::End(ref e)) if e.local_name().as_ref() == b"Relationships" => break,
+                    Ok(Event::Eof) => return Err(XlsxError::XmlEof("Relationships")),
+                    Err(e) => return Err(XlsxError::Xml(e)),
+                    _ => (),
                 }
             }
         }
 
-        Ok(sheet_to_pivot_map)
+        Ok(pivots_on_sheet)
     }
 
     #[cfg(feature = "pivot-cache")]
-    // Takes a pivot table path (ie xl/pivotTables/pivot1.xml) and sheet_name (ie sheet1).
-    // Returns the name of the pivot table and the location on the sheet.
-    fn find_range_and_pivot_name_from_pivot_path(
-        &mut self,
-        pivot_path: &str,
-    ) -> Result<String, XlsxError> {
+    // Takes a pivot table path (ie xl/pivotTables/pivot1.xml) and returns the name.
+    fn find_pivot_name_from_pivot_path(&mut self, pivot_path: &str) -> Result<String, XlsxError> {
         let mut xml = match xml_reader(&mut self.zip, pivot_path) {
             None => return Err(XlsxError::FileNotFound(pivot_path.to_string())),
             Some(x) => x?,
