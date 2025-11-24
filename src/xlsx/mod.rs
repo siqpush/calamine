@@ -707,6 +707,9 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
     /// Provide metadata for all pivot tables.
     ///
+    /// # Note
+    ///
+    /// This function is required before working with Pivot Table Data due to reliance on metadata in `PivotTableRef`.
     pub fn read_pivot_table_metadata(&mut self) -> Result<Vec<PivotTableRef>, XlsxError>
     where
         RS: Read + Seek,
@@ -799,7 +802,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///
     /// # Examples
     ///
-    /// An example of retrieving pivot  data for a Pivot Table named PivotTable1.
+    /// An example of retrieving pivot data for a Pivot Table named PivotTable1.
     ///
     /// ```
     /// use calamine::{open_workbook, Error, Xlsx};
