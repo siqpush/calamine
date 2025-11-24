@@ -2353,7 +2353,9 @@ where
 ///
 ///     Ok(())
 ///
-/// }```
+/// }
+/// ```
+/// 
 pub fn get_pivot_tables_by_name_and_sheet(
     pivot_tables: &[crate::xlsx::pivot_cache::PivotTableRef],
 ) -> Vec<(String, String)> {
