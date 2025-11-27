@@ -2717,7 +2717,6 @@ fn test_pivot_cache_data_mapping() {
     let pivot_tables = wb.read_pivot_table_metadata().unwrap();
     let mut results = wb
         .pivot_table_data(&pivot_tables, "PivotTable1", "PivotSheet1")
-        .unwrap()
         .unwrap();
     for expected_data in expected {
         assert_eq!(results.next(), Some(expected_data));
@@ -2731,11 +2730,9 @@ fn test_pivot_table_cache_match() {
     let results1 = wb
         .pivot_table_data(&pivot_tables, "PivotTable1", "PivotSheet1")
         .unwrap()
-        .unwrap()
         .collect::<Vec<_>>();
     let results2 = wb
         .pivot_table_data(&pivot_tables, "PivotTable2", "PivotSheet2")
-        .unwrap()
         .unwrap()
         .collect::<Vec<_>>();
     assert_eq!(results1, results2);

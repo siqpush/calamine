@@ -142,6 +142,9 @@ pub enum XlsxError {
     /// A wrapper for a variety of [`quick_xml::encoding::EncodingError`]
     /// encoding errors.
     Encoding(quick_xml::encoding::EncodingError),
+
+    /// Specified Pivot Table was not found on worksheet.
+    PivotTableNotFound(String),
 }
 
 from_err!(std::io::Error, XlsxError, Io);
@@ -196,6 +199,9 @@ impl std::fmt::Display for XlsxError {
             XlsxError::TableNotFound(n) => write!(f, "Table '{n}' not found"),
             XlsxError::NotAWorksheet(typ) => write!(f, "Expecting a worksheet, got {typ}"),
             XlsxError::Encoding(e) => write!(f, "XML encoding error: {e}"),
+            XlsxError::PivotTableNotFound(pt) => {
+                write!(f, "Pivot Table '{pt}' was not found on worksheet")
+            }
         }
     }
 }
@@ -710,11 +716,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
     /// # Note
     ///
     /// This function is required before working with Pivot Table Data due to reliance on metadata in `PivotTableRef`.
-    pub fn read_pivot_table_metadata(&mut self) -> Result<Vec<PivotTableRef>, XlsxError>
+    pub fn read_pivot_table_metadata(&mut self) -> Result<PivotTables, XlsxError>
     where
         RS: Read + Seek,
     {
-        let mut pivot_table_references = vec![];
+        let mut pivot_tables = PivotTables::new();
         for (sheet_name, sheet_path) in self.sheets.iter() {
             for pivot_path in
                 pivot_cache::find_pivot_table_paths_from_sheet(&mut self.zip, sheet_path)?.iter()
@@ -724,12 +730,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     &mut self.zip,
                     pivot_path,
                 )?;
-                let record_cache_path = find_pivot_cache_records_from_pivot_cache_definition(
+                let record_cache_path = find_pivot_cache_records_from_definitions(
                     &mut self.zip,
                     &definition_cache_path,
                 )?;
 
-                pivot_table_references.push(PivotTableRef::new(
+                pivot_tables.push(PivotTableRef::new(
                     name,
                     sheet_name.to_string(),
                     record_cache_path,
@@ -737,7 +743,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 ));
             }
         }
-        Ok(pivot_table_references)
+        Ok(pivot_tables)
     }
 
     /// Get the names of all pivot tables for a given worksheet.
@@ -814,10 +820,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///     let pivot_tables = workbook.read_pivot_table_metadata()?;
     ///
     ///    // Get the Pivot Table data by referencing the pivot table name and the worksheet it resides.
-    ///     if let Some(pivot_table_data) = workbook.pivot_table_data(&pivot_tables, "PivotTable1", "PivotSheet1") {
-    ///         for row in pivot_table_data? {
+    ///     for row in workbook.pivot_table_data(&pivot_tables, "PivotTable1", "PivotSheet1")? {
     ///             // Do something.
-    ///         }
     ///     }
     ///
     ///     Ok(())
@@ -826,115 +830,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///
     pub fn pivot_table_data(
         &'_ mut self,
-        pivot_tables: &[PivotTableRef],
+        pivot_tables: &PivotTables,
         pivot_table_name: &str,
         sheet_name: &str,
-    ) -> Option<Result<PivotCacheIter<'_, RS>, XlsxError>> {
-        pivot_tables
-            .iter()
-            .enumerate()
-            .find_map(|(pos, val)| {
-                if val.name() == pivot_table_name && val.sheet() == sheet_name {
-                    Some(pos)
-                } else {
-                    None
-                }
-            })
-            .map(|n| self.pivot_cache_iter(pivot_tables, n))
-    }
-
-    fn pivot_cache_iter(
-        &'_ mut self,
-        pivot_tables: &[PivotTableRef],
-        pivot_cache_index: usize,
     ) -> Result<PivotCacheIter<'_, RS>, XlsxError> {
-        let definitions = pivot_tables[pivot_cache_index].definitions();
-        let records = pivot_tables[pivot_cache_index].records();
-
-        let mut fields: Vec<Vec<(Tag, Value)>> = vec![];
-        let mut definition_map = std::collections::HashMap::new();
-        let mut field_names = vec![];
-
-        // Converting into an iterator requires first reading a pivotCacheDefinitions.xml file
-        // to get lookup values used in pivotCacheRecords.xml file.
-        {
-            let mut xml = match xml_reader(&mut self.zip, definitions) {
-                None => {
-                    return Err(XlsxError::FileNotFound(format!(
-                        "File not found: {}",
-                        definitions
-                    )))
-                }
-                Some(x) => x?,
-            };
-
-            let mut buf = Vec::with_capacity(64);
-            // building list of field names and definitions from some pivotCacheDefinitions.xml file
-            loop {
-                buf.clear();
-
-                match xml.read_event_into(&mut buf) {
-                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"cacheField" => {
-                        for a in e.attributes() {
-                            if let Ok(Attribute {
-                                key: QName(b"name"),
-                                value,
-                            }) = a
-                            {
-                                field_names.push(xml.decoder().decode(value.as_ref())?.to_string());
-                                fields.push(vec![]);
-                            }
-                            // The formula property of cacheField represents a calculated field / item.
-                            // This does not represent the underlying data and should be removed.
-                            else if let Ok(Attribute {
-                                key: QName(b"formula"),
-                                value: _value,
-                            }) = a
-                            {
-                                field_names.pop();
-                                fields.pop();
-                            }
-                        }
-                    }
-                    // Exclude grouped fields from results.
-                    // This does not represent the underlying data and should be removed.
-                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"groupItems" => {
-                        field_names.pop();
-                        fields.pop();
-                    }
-                    Ok(Event::Start(e)) if is_item(&e) => {
-                        if let Some(field) = fields.last_mut() {
-                            field.push(byte_start_to_item(&e));
-                        }
-                    }
-                    Ok(Event::Eof) => break,
-                    Ok(_) => {}
-                    Err(e) => {
-                        panic!("{e}")
-                    }
-                }
-            }
-
-            // add the definitions to the definition map with a key on field name
-            for (field, name) in fields.into_iter().zip(field_names.iter()) {
-                definition_map.insert(name.to_string(), field);
-            }
-        }
-
-        xml_reader(&mut self.zip, records).map_or_else(
-            || {
-                Err(XlsxError::FileNotFound(format!(
-                    "File not found: {records}"
-                )))
-            },
-            |record_reader| {
-                Ok(PivotCacheIter::new(
-                    definition_map,
-                    field_names,
-                    record_reader?,
-                ))
-            },
-        )
+        pivot_tables.find_pivot_table(self, sheet_name, pivot_table_name)
     }
 
     // sheets must be added before this is called!!
@@ -2432,7 +2332,7 @@ pub(crate) fn path_to_zip_path<RS: Read + Seek>(zip: &ZipArchive<RS>, path: &str
 }
 
 pub mod pivot_cache {
-    use super::XlReader;
+    use super::{xml_reader, XlReader};
     use crate::{CellErrorType, Data, XlsxError};
     use quick_xml::events::attributes::Attribute;
     use quick_xml::events::BytesStart;
@@ -2441,6 +2341,7 @@ pub mod pivot_cache {
     use quick_xml::Decoder;
     use std::collections::HashMap;
     use std::io::{Read, Seek};
+    use std::ops::Deref;
 
     pub type Tag = Box<[u8]>;
     pub type Value = Option<Box<[u8]>>;
@@ -2512,7 +2413,7 @@ pub mod pivot_cache {
     }
 
     // Get the target location of the pivot cache record file.
-    pub fn find_pivot_cache_records_from_pivot_cache_definition<RS>(
+    pub fn find_pivot_cache_records_from_definitions<RS>(
         zip: &mut zip::ZipArchive<RS>,
         path: &str,
     ) -> Result<String, XlsxError>
@@ -2665,9 +2566,7 @@ pub mod pivot_cache {
                         }
                     }
                 }
-                Ok(Event::End(e)) if e.local_name().as_ref() == b"pivotTableDefinition" => {
-                    break
-                }
+                Ok(Event::End(e)) if e.local_name().as_ref() == b"pivotTableDefinition" => break,
                 Ok(Event::Eof) => return Err(XlsxError::XmlEof("pivotTableDefinition")),
                 Err(e) => return Err(XlsxError::Xml(e)),
                 _ => (),
@@ -2778,6 +2677,46 @@ pub mod pivot_cache {
         }
     }
 
+    pub struct PivotTables(Vec<PivotTableRef>);
+
+    impl Default for PivotTables {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl PivotTables {
+        pub fn new() -> Self {
+            Self(vec![])
+        }
+
+        pub fn push(&mut self, pivot_table: PivotTableRef) {
+            self.0.push(pivot_table);
+        }
+
+        pub fn find_pivot_table<'a, RS: Read + Seek + 'a>(
+            &self,
+            xl: &'a mut crate::Xlsx<RS>,
+            sheet_name: &str,
+            pivot_table_name: &str,
+        ) -> Result<PivotCacheIter<'a, RS>, XlsxError> {
+            match self.0.iter().find(|pivot_table| {
+                pivot_table.name() == pivot_table_name && pivot_table.sheet() == sheet_name
+            }) {
+                Some(pt_ref) => get_pivot_cache_iter(xl, pt_ref),
+                None => Err(XlsxError::PivotTableNotFound(pivot_table_name.to_string())),
+            }
+        }
+    }
+
+    impl Deref for PivotTables {
+        type Target = [PivotTableRef];
+
+        fn deref(&self) -> &Self::Target {
+            self.0.as_slice()
+        }
+    }
+
     pub struct PivotTableRef {
         name: String,
         sheet: String,
@@ -2812,6 +2751,98 @@ pub mod pivot_cache {
         definitions: HashMap<String, Vec<(Tag, Value)>>,
         field_names: Vec<String>,
         reader: XlReader<'a, RS>,
+    }
+    fn get_pivot_cache_iter<'a, RS: Read + Seek + 'a>(
+        xl: &'a mut crate::Xlsx<RS>,
+        pivot_table: &PivotTableRef,
+    ) -> Result<PivotCacheIter<'a, RS>, XlsxError> {
+        let definitions = pivot_table.definitions();
+        let records = pivot_table.records();
+
+        let mut fields: Vec<Vec<(Tag, Value)>> = vec![];
+        let mut definition_map = std::collections::HashMap::new();
+        let mut field_names = vec![];
+
+        // Converting into an iterator requires first reading a pivotCacheDefinitions.xml file
+        // to get lookup values used in pivotCacheRecords.xml file.
+        {
+            let mut xml = match xml_reader(&mut xl.zip, definitions) {
+                None => {
+                    return Err(XlsxError::FileNotFound(format!(
+                        "File not found: {}",
+                        definitions
+                    )))
+                }
+                Some(x) => x?,
+            };
+
+            let mut buf = Vec::with_capacity(64);
+            // building list of field names and definitions from some pivotCacheDefinitions.xml file
+            loop {
+                buf.clear();
+
+                match xml.read_event_into(&mut buf) {
+                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"cacheField" => {
+                        for a in e.attributes() {
+                            if let Ok(Attribute {
+                                key: QName(b"name"),
+                                value,
+                            }) = a
+                            {
+                                field_names.push(xml.decoder().decode(value.as_ref())?.to_string());
+                                fields.push(vec![]);
+                            }
+                            // The formula property of cacheField represents a calculated field / item.
+                            // This does not represent the underlying data and should be removed.
+                            else if let Ok(Attribute {
+                                key: QName(b"formula"),
+                                value: _value,
+                            }) = a
+                            {
+                                field_names.pop();
+                                fields.pop();
+                            }
+                        }
+                    }
+                    // Exclude grouped fields from results.
+                    // This does not represent the underlying data and should be removed.
+                    Ok(Event::Start(e)) if e.local_name().as_ref() == b"groupItems" => {
+                        field_names.pop();
+                        fields.pop();
+                    }
+                    Ok(Event::Start(e)) if is_item(&e) => {
+                        if let Some(field) = fields.last_mut() {
+                            field.push(byte_start_to_item(&e));
+                        }
+                    }
+                    Ok(Event::Eof) => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        panic!("{e}")
+                    }
+                }
+            }
+
+            // add the definitions to the definition map with a key on field name
+            for (field, name) in fields.into_iter().zip(field_names.iter()) {
+                definition_map.insert(name.to_string(), field);
+            }
+        }
+
+        xml_reader(&mut xl.zip, records).map_or_else(
+            || {
+                Err(XlsxError::FileNotFound(format!(
+                    "File not found: {records}"
+                )))
+            },
+            |record_reader| {
+                Ok(PivotCacheIter::new(
+                    definition_map,
+                    field_names,
+                    record_reader?,
+                ))
+            },
+        )
     }
 
     impl<'a, RS: Read + Seek + 'a> PivotCacheIter<'a, RS> {
