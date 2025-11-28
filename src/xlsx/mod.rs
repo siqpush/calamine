@@ -13,9 +13,10 @@ use std::io::BufReader;
 use std::io::{Read, Seek};
 use std::ops::Deref;
 use std::str::FromStr;
+use std::string::String;
 
 use log::warn;
-use quick_xml::events::attributes::{Attribute, Attributes};
+use quick_xml::events::attributes::{AttrError, Attribute, Attributes};
 use quick_xml::events::BytesStart;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
@@ -2278,11 +2279,51 @@ pub(crate) fn path_to_zip_path<RS: Read + Seek>(zip: &ZipArchive<RS>, path: &str
     path.to_string()
 }
 
-pub type Tag = Box<[u8]>;
+// Data type of the record's value.
+pub enum Tag {
+    // String
+    S,
+    // Number (Float or Int)
+    N,
+    // Missing
+    M,
+    // Error
+    E,
+    // Bool
+    B,
+    // Date
+    D,
+}
+
 pub type Value = Option<Box<[u8]>>;
 
+/// Check if tag is an item within a PivotCache Record, which does not require a Definitions lookup.
+pub fn item_tag(e: &BytesStart) -> Option<Tag> {
+    match e.local_name().as_ref() {
+        b"s" => Some(Tag::S),
+        b"n" => Some(Tag::N),
+        b"m" => Some(Tag::M),
+        b"e" => Some(Tag::E),
+        b"b" => Some(Tag::B),
+        b"d" => Some(Tag::D),
+        _ => None,
+    }
+}
+pub fn item_value(e: &BytesStart) -> Result<Value, AttrError> {
+    for a in e.attributes() {
+        if let Attribute {
+            key: QName(b"v"),
+            value,
+        } = a?
+        {
+            return Ok(Some(Box::from(value)));
+        }
+    }
+    Ok(None)
+}
+
 // Get the target location of the pivot table's pivot cache definitions.
-pub fn find_pivot_cache_definitions_from_pivot<RS>(
+fn find_pivot_cache_definitions_from_pivot<RS>(
     zip: &mut zip::ZipArchive<RS>,
     path: &str,
 ) -> Result<String, XlsxError>
@@ -2361,7 +2402,6 @@ where
         None => return Err(XlsxError::FileNotFound(rel_path.to_owned())),
         Some(x) => x?,
     };
-    let mut paths = vec![];
     let mut buf = Vec::with_capacity(64);
     loop {
         buf.clear();
@@ -2384,9 +2424,9 @@ where
                 }
                 if is_pivot_cache_record_type {
                     if target.starts_with("xl/pivotCache") {
-                        paths.push(target);
+                        return Ok(target);
                     } else if !target.is_empty() {
-                        paths.push(format!("xl/pivotCache/{target}"));
+                        return Ok(format!("xl/pivotCache/{target}"));
                     }
                 }
             }
@@ -2396,17 +2436,9 @@ where
             _ => (),
         }
     }
-    if paths.len() > 1 {
-        Err(XlsxError::Unexpected(
-            "many definition cache relationships found for one pivot table",
-        ))
-    } else if paths.is_empty() {
-        Err(XlsxError::Unexpected(
-            "no cache definition found for pivot table",
-        ))
-    } else {
-        Ok(paths[0].clone())
-    }
+    Err(XlsxError::Unexpected(
+        "no cache definition found for pivot table",
+    ))
 }
 
 // Return a vec of pivot table paths (ie xl/pivotTables/pivot1.xml) for a given sheet name.
@@ -2511,87 +2543,51 @@ where
 }
 
 /// Parse an item within a PivotCache Record into its appropriate [`Data`] type.
-pub fn parse_item(item: (Tag, Value), decoder: &Decoder) -> Result<Data, XlsxError> {
-    match item.0.as_ref() {
-        b"m" => Ok(Data::Empty),
-        b"s" => Ok(item
-            .1
-            .map(|val| {
-                if let Ok(val) = decoder.decode(val.as_ref()) {
-                    Data::String(val.to_string())
-                } else {
-                    Data::Error(CellErrorType::GettingData)
+pub fn parse_item(item: &(Tag, Value), decoder: &Decoder) -> Data {
+    let Some(val) = item.1.as_deref() else {
+        return Data::Empty;
+    };
+    match item.0 {
+        Tag::M => Data::Empty,
+        Tag::S => {
+            if let Ok(val) = decoder.decode(val.as_ref()) {
+                Data::String(val.to_string())
+            } else {
+                Data::Error(CellErrorType::GettingData)
+            }
+        }
+        Tag::N => {
+            if val.contains(&b'.') {
+                match bytes_to_f64(val, decoder) {
+                    Some(val) => Data::Float(val),
+                    None => Data::Error(CellErrorType::GettingData),
                 }
-            })
-            .unwrap_or(Data::Empty)),
-        b"n" => Ok(item
-            .1
-            .map(|val| {
-                if val.contains(&b'.') {
-                    match bytes_to_f64(val.as_ref(), decoder) {
-                        Some(val) => Data::Float(val),
-                        None => Data::Error(CellErrorType::GettingData),
-                    }
-                } else {
-                    match bytes_to_i64(val.as_ref(), decoder) {
-                        Some(val) => Data::Int(val),
-                        None => Data::Error(CellErrorType::GettingData),
-                    }
+            } else {
+                match bytes_to_i64(val, decoder) {
+                    Some(val) => Data::Int(val),
+                    None => Data::Error(CellErrorType::GettingData),
                 }
-            })
-            .unwrap_or(Data::Empty)),
-        b"d" => Ok(item
-            .1
-            .as_ref()
-            .map(|val| {
-                if let Ok(val) = decoder.decode(val) {
-                    Data::DateTimeIso(val.into())
-                } else {
-                    Data::Error(CellErrorType::GettingData)
+            }
+        }
+        Tag::D => {
+            if let Ok(val) = decoder.decode(val) {
+                Data::DateTimeIso(val.into())
+            } else {
+                Data::Error(CellErrorType::GettingData)
+            }
+        }
+        Tag::B => {
+            {
+                // boolean tags only support W3C XML Schema
+                match val {
+                    b"0" | b"false" => Data::Bool(false),
+                    b"1" | b"true" => Data::Bool(true),
+                    _ => Data::Error(CellErrorType::GettingData),
                 }
-            })
-            .unwrap_or(Data::Empty)),
-        b"b" => Ok(item
-            .1
-            .map(|val| {
-                {
-                    // boolean tags only support W3C XML Schema
-                    match val.as_ref() {
-                        b"0" | b"false" => Data::Bool(false),
-                        b"1" | b"true" => Data::Bool(true),
-                        _ => Data::Error(CellErrorType::GettingData),
-                    }
-                }
-            })
-            .unwrap_or(Data::Empty)),
-        b"e" => Ok(item
-            .1
-            .map(|_| Data::Error(CellErrorType::Ref))
-            .unwrap_or(Data::Empty)),
-        _ => Err(XlsxError::Unexpected(
-            "unhandled pivot cache tag for record",
-        )),
+            }
+        }
+        Tag::E => Data::Error(CellErrorType::Ref),
     }
-}
-
-/// Check if tag is an item within a PivotCache Record, which does not require a Definitions lookup.
-pub fn is_item(e: &BytesStart) -> bool {
-    [b"s", b"n", b"m", b"e", b"b", b"d"]
-        .into_iter()
-        .any(|val| val.eq(e.local_name().as_ref()))
-}
-
-pub fn byte_start_to_item(e: &BytesStart) -> (Tag, Value) {
-    (
-        Box::from(e.local_name().as_ref()),
-        e.attributes().find_map(|attr| match attr {
-            Ok(Attribute {
-                key: QName(b"v"),
-                value: v,
-            }) => Some(Box::from(v)),
-            _ => None,
-        }),
-    )
 }
 
 // Parse failures are handled with None and left to `Self::parse_item` to address.
@@ -2670,14 +2666,13 @@ impl PivotTables {
     /// fn main() -> Result<(), Error> {
     ///
     ///     // Open the workbook.
-    ///     use calamine::get_pivot_tables_by_name_and_sheet;
-    /// let mut workbook: Xlsx<_> = open_workbook("tests/pivots.xlsx")?;
+    ///     let mut workbook: Xlsx<_> = open_workbook("tests/pivots.xlsx")?;
     ///     // Must retrieve necessary metadata before reading Pivot Table data.
     ///     let pivot_tables = workbook.read_pivot_table_metadata()?;
     ///
     ///     // "PivotTable1" is found on both sheets: "PivotSheet1" & "PivotSheet3" so
     ///     // we must include the sheet name in our filter ~ see note on uniqueness.
-    ///     let names_and_sheets = get_pivot_tables_by_name_and_sheet(&pivot_tables)
+    ///     let names_and_sheets = pivot_tables.get_pivot_tables_by_name_and_sheet()
     ///         .into_iter()
     ///         .filter_map(|pt| {
     ///             if pt.0.eq("PivotSheet1") && pt.1.eq("PivotTable1") {
@@ -2686,8 +2681,7 @@ impl PivotTables {
     ///                 None
     ///             }
     ///         })
-    ///         .collect::<Vec<_>>()
-    ///     ;
+    ///         .collect::<Vec<_>>();
     ///
     ///     assert_eq!(names_and_sheets.len(), 1);
     ///
@@ -2724,8 +2718,8 @@ impl PivotTables {
     ///     // Must retrieve necessary metadata before reading Pivot Table data.
     ///     let pivot_tables = workbook.read_pivot_table_metadata()?;
     ///
-    ///     // Get the pivot table names in the workbook.
-    ///     let pivot_table_names = workbook.pivot_tables_by_sheet(&pivot_tables, "PivotSheet1")?;
+    ///     // Get the pivot table names in the workbook for a given sheet.
+    ///     let pivot_table_names = pivot_tables.pivot_tables_by_sheet("PivotSheet1");
     ///
     ///     // Check the pivot table names (ordering not guaranteed).
     ///     assert_eq!(pivot_table_names, vec!["PivotTable1"]);
@@ -2848,9 +2842,9 @@ fn get_pivot_cache_iter<'a, RS: Read + Seek + 'a>(
                     field_names.pop();
                     fields.pop();
                 }
-                Ok(Event::Start(e)) if is_item(&e) => {
+                Ok(Event::Start(e)) if item_tag(&e).is_some() => {
                     if let Some(field) = fields.last_mut() {
-                        field.push(byte_start_to_item(&e));
+                        field.push((item_tag(&e).unwrap(), item_value(&e)?));
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -2925,22 +2919,24 @@ impl<'a, RS: Read + Seek + 'a> Iterator for PivotCacheIter<'a, RS> {
                                 .map(|val| val.parse::<usize>().unwrap())
                                 .unwrap();
                             let column_name = &self.field_names[col_number];
-                            row.push(
-                                parse_item(
-                                    self.definitions[column_name][value_position].clone(),
-                                    &self.reader.decoder(),
-                                )
-                                .unwrap(),
-                            );
+                            row.push(parse_item(
+                                &self.definitions[column_name][value_position],
+                                &self.reader.decoder(),
+                            ));
                             break;
                         }
                     }
 
                     col_number += 1;
                 }
-                Ok(Event::Start(e)) if is_item(&e) => {
-                    row.push(parse_item(byte_start_to_item(&e), &self.reader.decoder()).unwrap());
-                    col_number += 1;
+                Ok(Event::Start(e)) if item_tag(&e).is_some() => {
+                    if let Ok(value) = item_value(&e) {
+                        row.push(parse_item(
+                            &(item_tag(&e).unwrap(), value),
+                            &self.reader.decoder(),
+                        ));
+                        col_number += 1;
+                    }
                 }
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"r" => return Some(row),
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"pivotCacheRecords" => {
